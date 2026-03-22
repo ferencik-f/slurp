@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -43,15 +42,14 @@ func uploadHandler(w http.ResponseWriter, r *http.Request, token, dir string) {
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
 
-	dest := resolveFilename(r, dir)
-	f, err := os.Create(dest)
+	target, err := reserveUploadTarget(dir, requestedFilename(r))
 	if err != nil {
 		http.Error(w, "Failed to create file", http.StatusInternalServerError)
 		return
 	}
-	defer f.Close()
 
-	if _, err := io.Copy(f, r.Body); err != nil {
+	if _, err := io.Copy(target.partFile, r.Body); err != nil {
+		target.keepPartial()
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
 			http.Error(w, "Request Entity Too Large", http.StatusRequestEntityTooLarge)
@@ -61,5 +59,11 @@ func uploadHandler(w http.ResponseWriter, r *http.Request, token, dir string) {
 		return
 	}
 
-	fmt.Fprintf(w, "Saved: %s\n", filepath.Base(dest))
+	if err := target.publish(); err != nil {
+		target.keepPartial()
+		http.Error(w, "Failed to publish file", http.StatusInternalServerError)
+		return
+	}
+
+	fmt.Fprintf(w, "Saved: %s\n", filepath.Base(target.finalPath))
 }

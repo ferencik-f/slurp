@@ -97,6 +97,36 @@ func TestUploadHandler_BodyTooLarge(t *testing.T) {
 	}
 }
 
+func TestUploadHandler_BodyTooLargeLeavesRecoverableArtifact(t *testing.T) {
+	orig := maxUploadBytes
+	maxUploadBytes = 5
+	defer func() { maxUploadBytes = orig }()
+
+	dir := t.TempDir()
+	req := httptest.NewRequest("PUT", "/upload?token=secret&filename=big.bin", strings.NewReader("this is more than 5 bytes"))
+	w := httptest.NewRecorder()
+
+	uploadHandler(w, req, "secret", dir)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413, got %d", w.Code)
+	}
+
+	finalPath := filepath.Join(dir, "big.bin")
+	if _, err := os.Stat(finalPath); !os.IsNotExist(err) {
+		t.Fatalf("expected no published file at %s, got err=%v", finalPath, err)
+	}
+
+	partPath := filepath.Join(dir, "big.bin.part")
+	data, err := os.ReadFile(partPath)
+	if err != nil {
+		t.Fatalf("expected recoverable artifact at %s: %v", partPath, err)
+	}
+	if len(data) == 0 {
+		t.Fatal("expected recoverable artifact to contain partial data")
+	}
+}
+
 func TestUploadHandler_CollisionDeconflicts(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "file.txt"), []byte("original"), 0644)

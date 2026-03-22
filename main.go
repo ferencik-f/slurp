@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -94,55 +93,8 @@ func main() {
 		}
 	}()
 
-	// Start tunnel or fall back to local URL
-	urlCh := make(chan string, 1)
-	var tunnelCmd *exec.Cmd
-	if *noTunnel {
-		urlCh <- fmt.Sprintf("http://localhost:%d", port)
-	} else {
-		cmd, err := launchTunnel(port, urlCh)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "cloudflared not found — local only mode\n")
-			urlCh <- fmt.Sprintf("http://localhost:%d", port)
-		} else {
-			tunnelCmd = cmd
-		}
-	}
-
-	// shutdownCh is closed when shutdown begins, allowing the banner goroutine to exit.
-	shutdownCh := make(chan struct{})
-
-	// Print startup banner once URL is known
-	go func() {
-		const (
-			reset  = "\033[0m"
-			bold   = "\033[1m"
-			dim    = "\033[2m"
-			cyan   = "\033[36m"
-			green  = "\033[32m"
-			yellow = "\033[33m"
-		)
-		sep := "  " + cyan + strings.Repeat("─", 62) + reset
-		select {
-		case baseURL := <-urlCh:
-			curlCmd := fmt.Sprintf(`curl -T <file> "%s/upload/<file>?token=%s"`, baseURL, token)
-			fmt.Println()
-			fmt.Printf("  %sslurp%s  ·  ready\n", bold+green, reset)
-			fmt.Println(sep)
-			fmt.Println()
-			fmt.Printf("  %sdir%s    %s\n", dim, reset, dir)
-			fmt.Printf("  %stoken%s  %s%s%s\n", dim, reset, bold, token, reset)
-			fmt.Println()
-			fmt.Println(sep)
-			fmt.Println()
-			fmt.Printf("  %s%s%s\n", bold+yellow, curlCmd, reset)
-			fmt.Println()
-			fmt.Println(sep)
-			fmt.Printf("  %s^C to quit%s\n", dim, reset)
-			fmt.Println()
-		case <-shutdownCh:
-		}
-	}()
+	baseURL, tunnelCmd := resolveBaseURL(*noTunnel, port, 2*time.Second, launchTunnel)
+	printReadyBanner(baseURL, token, dir)
 
 	// Graceful shutdown: first Ctrl+C warns if upload in progress, second force-quits
 	sigCh := make(chan os.Signal, 2)
@@ -154,13 +106,40 @@ func main() {
 		<-sigCh
 	}
 
-	close(shutdownCh)
-
 	if tunnelCmd != nil {
-		tunnelCmd.Process.Kill()
+		_ = tunnelCmd.Process.Kill()
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	server.Shutdown(ctx)
+	_ = server.Shutdown(ctx)
+}
+
+func printReadyBanner(baseURL, token, dir string) {
+	const (
+		reset  = "\033[0m"
+		bold   = "\033[1m"
+		dim    = "\033[2m"
+		cyan   = "\033[36m"
+		green  = "\033[32m"
+		yellow = "\033[33m"
+	)
+
+	sep := "  " + cyan + strings.Repeat("─", 62) + reset
+	curlCmd := fmt.Sprintf(`curl -T <file> "%s/upload/<file>?token=%s"`, baseURL, token)
+
+	fmt.Println()
+	fmt.Printf("  %sslurp%s  ·  ready\n", bold+green, reset)
+	fmt.Println(sep)
+	fmt.Println()
+	fmt.Printf("  %sdir%s    %s\n", dim, reset, dir)
+	fmt.Printf("  %stoken%s  %s%s%s\n", dim, reset, bold, token, reset)
+	fmt.Println()
+	fmt.Println(sep)
+	fmt.Println()
+	fmt.Printf("  %s%s%s\n", bold+yellow, curlCmd, reset)
+	fmt.Println()
+	fmt.Println(sep)
+	fmt.Printf("  %s^C to quit%s\n", dim, reset)
+	fmt.Println()
 }
