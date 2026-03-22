@@ -1,0 +1,20 @@
+# IDE
+.idea
+
+# Go build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Compiled binary
+slurp
+
+# goreleaser
+dist/
+
+# Dependency vendor directory
+vendor/
