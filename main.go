@@ -95,7 +95,10 @@ func main() {
 		}
 	}()
 
-	baseURL, tunnelCmd := resolveBaseURL(*noTunnel, port, 2*time.Second, launchTunnel)
+	if !*noTunnel {
+		fmt.Println("  starting tunnel…")
+	}
+	baseURL, tunnelCmd := resolveBaseURL(*noTunnel, port, 15*time.Second, launchTunnel)
 	printReadyBanner(baseURL, token, dir)
 
 	// Graceful shutdown: first Ctrl+C warns if upload in progress, second force-quits
