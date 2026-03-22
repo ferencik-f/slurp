@@ -7,6 +7,25 @@ import (
 	"testing"
 )
 
+func TestResolveFilename_PathSegment(t *testing.T) {
+	dir := t.TempDir()
+	r, _ := http.NewRequest("PUT", "/upload/receiver.py", nil)
+	got := resolveFilename(r, dir)
+	if filepath.Base(got) != "receiver.py" {
+		t.Fatalf("expected receiver.py, got %s", got)
+	}
+}
+
+func TestResolveFilename_PathSegmentTakesPrecedence(t *testing.T) {
+	dir := t.TempDir()
+	r, _ := http.NewRequest("PUT", "/upload/path.txt", nil)
+	r.URL.RawQuery = "filename=query.txt"
+	got := resolveFilename(r, dir)
+	if filepath.Base(got) != "path.txt" {
+		t.Fatalf("path segment should win over query param, got %s", got)
+	}
+}
+
 func TestResolveFilename_QueryParam(t *testing.T) {
 	dir := t.TempDir()
 	r, _ := http.NewRequest("PUT", "/upload?filename=photo.jpg", nil)

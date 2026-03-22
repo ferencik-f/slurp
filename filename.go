@@ -10,7 +10,13 @@ import (
 )
 
 func resolveFilename(r *http.Request, dir string) string {
+	// 1. Path segment: /upload/filename.txt
+	if after, ok := strings.CutPrefix(r.URL.Path, "/upload/"); ok && after != "" {
+		return deconflict(filepath.Join(dir, filepath.Base(after)))
+	}
+	// 2. Query param: ?filename=foo.txt
 	name := r.URL.Query().Get("filename")
+	// 3. Timestamp fallback
 	if name == "" {
 		name = fmt.Sprintf("upload-%s.bin", time.Now().Format("20060102-150405"))
 	}

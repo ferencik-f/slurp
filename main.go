@@ -60,13 +60,15 @@ func main() {
 	// Register HTTP routes
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler)
-	mux.HandleFunc("/upload", func(w http.ResponseWriter, r *http.Request) {
+	uploadRoute := func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPut && r.Method != http.MethodPost {
 			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		uploadHandler(w, r, token, dir)
-	})
+	}
+	mux.HandleFunc("/upload", uploadRoute)
+	mux.HandleFunc("/upload/", uploadRoute)
 
 	server := &http.Server{
 		Addr:    fmt.Sprintf(":%d", port),
@@ -99,7 +101,7 @@ func main() {
 		fmt.Printf("Saving to: %s\n", dir)
 		fmt.Println()
 		fmt.Println("Push a file:")
-		fmt.Printf("  curl -T <file> \"%s/upload?token=%s&filename=<file>\"\n", baseURL, token)
+		fmt.Printf("  curl -T <file> \"%s/upload/<file>?token=%s\"\n", baseURL, token)
 		fmt.Println()
 		fmt.Println("Ctrl+C to stop.")
 	}()
