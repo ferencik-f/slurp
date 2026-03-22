@@ -67,27 +67,29 @@ func main() {
 	}
 
 	// Register HTTP routes
+	srv := newServer(token, dir)
 	mux := http.NewServeMux()
-	mux.HandleFunc("/health", healthHandler)
+	mux.HandleFunc("/health", srv.healthHandler)
 	uploadRoute := func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPut && r.Method != http.MethodPost {
 			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		uploadHandler(w, r, token, dir)
+		srv.uploadHandler(w, r)
 	}
 	mux.HandleFunc("/upload", uploadRoute)
 	mux.HandleFunc("/upload/", uploadRoute)
 
-	server := &http.Server{
+	httpServer := &http.Server{
 		Addr:              fmt.Sprintf(":%d", port),
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
+		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
 
 	go func() {
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			fmt.Fprintln(os.Stderr, "server error:", err)
 			os.Exit(1)
 		}
@@ -101,7 +103,7 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	<-sigCh
-	if atomic.LoadInt64(&activeUploads) > 0 {
+	if atomic.LoadInt64(&srv.activeUploads) > 0 {
 		fmt.Fprintln(os.Stderr, "\nUpload in progress — press Ctrl+C again to force quit")
 		<-sigCh
 	}
@@ -112,18 +114,30 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_ = server.Shutdown(ctx)
+	_ = httpServer.Shutdown(ctx)
+}
+
+func isColorTerminal() bool {
+	if os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
+		return false
+	}
+	fi, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
 }
 
 func printReadyBanner(baseURL, token, dir string) {
-	const (
+	reset, bold, dim, cyan, green, yellow := "", "", "", "", "", ""
+	if isColorTerminal() {
 		reset  = "\033[0m"
 		bold   = "\033[1m"
 		dim    = "\033[2m"
 		cyan   = "\033[36m"
 		green  = "\033[32m"
 		yellow = "\033[33m"
-	)
+	}
 
 	sep := "  " + cyan + strings.Repeat("─", 62) + reset
 	curlCmd := fmt.Sprintf(`curl -T <file> "%s/upload/<file>?token=%s"`, baseURL, token)

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -36,7 +37,7 @@ func reserveUploadTarget(dir, requested string) (*reservedUpload, error) {
 		finalPath := filepath.Join(dir, deconflictedName(requested, i))
 		placeholder, err := os.OpenFile(finalPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
 		if err != nil {
-			if os.IsExist(err) {
+			if errors.Is(err, os.ErrExist) {
 				continue
 			}
 			return nil, err
@@ -50,7 +51,7 @@ func reserveUploadTarget(dir, requested string) (*reservedUpload, error) {
 		partFile, err := os.OpenFile(partPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
 		if err != nil {
 			_ = os.Remove(finalPath)
-			if os.IsExist(err) {
+			if errors.Is(err, os.ErrExist) {
 				continue
 			}
 			return nil, err

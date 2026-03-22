@@ -11,13 +11,22 @@ import (
 	"sync/atomic"
 )
 
-// maxUploadBytes is the maximum accepted request body size (2 GiB by default).
-var maxUploadBytes int64 = 2 << 30
+// maxUploadBytes is the default maximum accepted request body size (2 GiB).
+const maxUploadBytes int64 = 2 << 30
 
-var activeUploads int64
+type server struct {
+	token         string
+	dir           string
+	maxUpload     int64
+	activeUploads int64
+}
 
-func checkAuth(r *http.Request, token string) bool {
-	tb := []byte(token)
+func newServer(token, dir string) *server {
+	return &server{token: token, dir: dir, maxUpload: maxUploadBytes}
+}
+
+func (s *server) checkAuth(r *http.Request) bool {
+	tb := []byte(s.token)
 	auth := r.Header.Get("Authorization")
 	if strings.HasPrefix(auth, "Bearer ") {
 		return subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(auth, "Bearer ")), tb) == 1
@@ -25,24 +34,28 @@ func checkAuth(r *http.Request, token string) bool {
 	return subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("token")), tb) == 1
 }
 
-func healthHandler(w http.ResponseWriter, r *http.Request) {
+func (s *server) healthHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintln(w, "OK")
 }
 
-func uploadHandler(w http.ResponseWriter, r *http.Request, token, dir string) {
-	if !checkAuth(r, token) {
+func (s *server) uploadHandler(w http.ResponseWriter, r *http.Request) {
+	if !s.checkAuth(r) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
 	// Track in-flight uploads for graceful shutdown
-	atomic.AddInt64(&activeUploads, 1)
-	defer atomic.AddInt64(&activeUploads, -1)
+	atomic.AddInt64(&s.activeUploads, 1)
+	defer atomic.AddInt64(&s.activeUploads, -1)
 
-	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
+	r.Body = http.MaxBytesReader(w, r.Body, s.maxUpload)
 
-	target, err := reserveUploadTarget(dir, requestedFilename(r))
+	target, err := reserveUploadTarget(s.dir, requestedFilename(r))
 	if err != nil {
 		http.Error(w, "Failed to create file", http.StatusInternalServerError)
 		return
