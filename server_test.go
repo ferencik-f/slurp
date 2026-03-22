@@ -83,6 +83,18 @@ func TestUploadHandler_Unauthorized(t *testing.T) {
 	}
 }
 
+func TestRoutes_UploadMethodNotAllowed(t *testing.T) {
+	s := &server{token: "secret", dir: t.TempDir(), maxUpload: maxUploadBytes}
+	req := httptest.NewRequest(http.MethodDelete, "/upload?token=secret", nil)
+	w := httptest.NewRecorder()
+
+	newMux(s).ServeHTTP(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", w.Code)
+	}
+}
+
 func TestUploadHandler_SavesFile(t *testing.T) {
 	s := &server{token: "secret", dir: t.TempDir(), maxUpload: maxUploadBytes}
 	req := httptest.NewRequest("PUT", "/upload?token=secret&filename=test.txt", strings.NewReader("hello world"))

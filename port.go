@@ -5,15 +5,42 @@ import (
 	"net"
 )
 
-// findFreePort returns the first free TCP port starting from start.
-// It tries to bind each port — if binding succeeds, the port is free.
-func findFreePort(start int) (int, error) {
-	for port := start; port < start+100; port++ {
-		ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+const (
+	defaultPortStart      = 8765
+	defaultPortSearchSpan = 100
+)
+
+func listenOnPort(port int) (net.Listener, int, error) {
+	if port != 0 {
+		return listenTCP(port)
+	}
+
+	for candidate := defaultPortStart; candidate < defaultPortStart+defaultPortSearchSpan; candidate++ {
+		ln, actualPort, err := listenTCP(candidate)
 		if err == nil {
-			ln.Close()
-			return port, nil
+			return ln, actualPort, nil
 		}
 	}
-	return 0, fmt.Errorf("no free port found in range %d-%d", start, start+99)
+
+	return nil, 0, fmt.Errorf(
+		"no free port found in range %d-%d",
+		defaultPortStart,
+		defaultPortStart+defaultPortSearchSpan-1,
+	)
+}
+
+func listenTCP(port int) (net.Listener, int, error) {
+	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		return nil, 0, err
+	}
+	return ln, listenerPort(ln), nil
+}
+
+func listenerPort(ln net.Listener) int {
+	addr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok {
+		return 0
+	}
+	return addr.Port
 }

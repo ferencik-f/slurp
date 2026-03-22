@@ -28,23 +28,26 @@ slurp --no-tunnel
 On startup, slurp prints a ready-to-use `curl` command:
 
 ```
-slurp is ready
-Saving to: ~/Downloads/slurp
+slurp  ·  ready
+dir    ~/Downloads/slurp
+token  abc123...
 
-Push a file:
-  curl -T photo.jpg "https://xyz.trycloudflare.com/upload?token=abc123de&filename=photo.jpg"
+curl -T photo.jpg -H "Authorization: Bearer abc123..." \
+  "https://xyz.trycloudflare.com/upload/photo.jpg"
 
 Ctrl+C to stop.
 ```
 
+Query-string auth remains supported for compatibility, but bearer auth is the preferred default because it is less likely to leak through shell history, logs, or screenshots.
+
 ## Options
 
-| Flag          | Env            | Default               | Description                      |
-|---------------|----------------|-----------------------|----------------------------------|
-| `--port`      | `PORT`         | First free from 8765  | Listen port                      |
-| `--dir`       | `UPLOAD_DIR`   | `~/Downloads/slurp`   | Directory to save uploaded files |
-| `--token`     | `UPLOAD_TOKEN` | Auto-generated        | Auth token                       |
-| `--no-tunnel` | —              | false                 | Disable cloudflared tunnel       |
+| Flag          | Preferred Env                  | Default               | Description                      |
+|---------------|--------------------------------|-----------------------|----------------------------------|
+| `--port`      | `SLURP_PORT` (`PORT` legacy)   | First free from 8765  | Listen port                      |
+| `--dir`       | `SLURP_DIR` (`UPLOAD_DIR` legacy) | `~/Downloads/slurp`   | Directory to save uploaded files |
+| `--token`     | `SLURP_TOKEN` (`UPLOAD_TOKEN` legacy) | Auto-generated        | Auth token                       |
+| `--no-tunnel` | —                              | false                 | Disable cloudflared tunnel       |
 
 ## Requirements
 

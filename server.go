@@ -18,7 +18,7 @@ type server struct {
 	token         string
 	dir           string
 	maxUpload     int64
-	activeUploads int64
+	activeUploads atomic.Int64
 }
 
 func newServer(token, dir string) *server {
@@ -44,14 +44,19 @@ func (s *server) healthHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) uploadHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut && r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	if !s.checkAuth(r) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
 	// Track in-flight uploads for graceful shutdown
-	atomic.AddInt64(&s.activeUploads, 1)
-	defer atomic.AddInt64(&s.activeUploads, -1)
+	s.activeUploads.Add(1)
+	defer s.activeUploads.Add(-1)
 
 	r.Body = http.MaxBytesReader(w, r.Body, s.maxUpload)
 
@@ -79,4 +84,12 @@ func (s *server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fmt.Fprintf(w, "Saved: %s\n", filepath.Base(target.finalPath))
+}
+
+func newMux(s *server) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", s.healthHandler)
+	mux.HandleFunc("/upload", s.uploadHandler)
+	mux.HandleFunc("/upload/", s.uploadHandler)
+	return mux
 }

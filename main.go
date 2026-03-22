@@ -2,161 +2,164 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
-	"strconv"
 	"strings"
-	"sync/atomic"
 	"syscall"
 	"time"
 )
 
+const (
+	readHeaderTimeout = 10 * time.Second
+	writeTimeout      = 30 * time.Second
+	idleTimeout       = 120 * time.Second
+	tunnelWaitTimeout = 15 * time.Second
+	shutdownTimeout   = 5 * time.Second
+)
+
 func main() {
-	portFlag := flag.Int("port", 0, "listen port (default: first free from 8765)")
-	dirFlag := flag.String("dir", "", "upload directory (default: ~/Downloads/slurp)")
-	tokenFlag := flag.String("token", "", "auth token (default: auto-generated)")
-	noTunnel := flag.Bool("no-tunnel", false, "disable cloudflared tunnel")
-	flag.Parse()
-
-	// Resolve port: flag → env → auto
-	port := *portFlag
-	if port == 0 {
-		if p := os.Getenv("PORT"); p != "" {
-			v, err := strconv.Atoi(p)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "error: invalid PORT %q: %v\n", p, err)
-				os.Exit(1)
-			}
-			port = v
-		}
-	}
-	if port == 0 {
-		var err error
-		port, err = findFreePort(8765)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
-		}
-	}
-
-	// Resolve upload dir: flag → env → ~/Downloads/slurp
-	dir := *dirFlag
-	if dir == "" {
-		dir = os.Getenv("UPLOAD_DIR")
-	}
-	if dir == "" {
-		home, _ := os.UserHomeDir()
-		dir = filepath.Join(home, "Downloads", "slurp")
-	}
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		fmt.Fprintln(os.Stderr, "error creating upload dir:", err)
+	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+}
 
-	// Resolve token: flag → env → auto-generated
-	token := *tokenFlag
-	if token == "" {
-		token = os.Getenv("UPLOAD_TOKEN")
-	}
-	if token == "" {
-		token = generateToken()
+func run(args []string, stdout, stderr io.Writer) error {
+	cfg, err := loadConfig(args, os.Getenv, os.UserHomeDir)
+	if err != nil {
+		return err
 	}
 
-	// Register HTTP routes
-	srv := newServer(token, dir)
-	mux := http.NewServeMux()
-	mux.HandleFunc("/health", srv.healthHandler)
-	uploadRoute := func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPut && r.Method != http.MethodPost {
-			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	if err := os.MkdirAll(cfg.Dir, 0755); err != nil {
+		return fmt.Errorf("create upload dir: %w", err)
+	}
+
+	listener, port, err := listenOnPort(cfg.Port)
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
+
+	srv := newServer(cfg.Token, cfg.Dir)
+	httpServer := &http.Server{
+		Handler:           newMux(srv),
+		ReadHeaderTimeout: readHeaderTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
+	}
+
+	serveErrCh := make(chan error, 1)
+	go func() {
+		err := httpServer.Serve(listener)
+		if err != nil && err != http.ErrServerClosed {
+			serveErrCh <- err
 			return
 		}
-		srv.uploadHandler(w, r)
-	}
-	mux.HandleFunc("/upload", uploadRoute)
-	mux.HandleFunc("/upload/", uploadRoute)
-
-	httpServer := &http.Server{
-		Addr:              fmt.Sprintf(":%d", port),
-		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       120 * time.Second,
-	}
-
-	go func() {
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			fmt.Fprintln(os.Stderr, "server error:", err)
-			os.Exit(1)
-		}
+		close(serveErrCh)
 	}()
 
-	if !*noTunnel {
-		fmt.Println("  starting tunnel…")
-	}
-	baseURL, tunnelCmd := resolveBaseURL(*noTunnel, port, 15*time.Second, launchTunnel)
-	printReadyBanner(baseURL, token, dir)
+	tunnelCtx, cancelTunnel := context.WithCancel(context.Background())
+	defer cancelTunnel()
 
-	// Graceful shutdown: first Ctrl+C warns if upload in progress, second force-quits
+	if !cfg.NoTunnel {
+		fmt.Fprintln(stdout, "  starting tunnel...")
+	}
+	baseURL, tunnelCmd, tunnelWarn := resolveBaseURL(tunnelCtx, cfg.NoTunnel, port, tunnelWaitTimeout, launchTunnel)
+	if tunnelWarn != nil {
+		fmt.Fprintf(stderr, "warning: %v\n", tunnelWarn)
+	}
+	printReadyBanner(stdout, baseURL, cfg.Token, cfg.Dir)
+
 	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
 
-	<-sigCh
-	if atomic.LoadInt64(&srv.activeUploads) > 0 {
-		fmt.Fprintln(os.Stderr, "\nUpload in progress — press Ctrl+C again to force quit")
-		<-sigCh
+	select {
+	case err := <-serveErrCh:
+		cancelTunnel()
+		if tunnelCmd != nil {
+			stopTunnelProcess(tunnelCmd, nil)
+		}
+		if err != nil {
+			return fmt.Errorf("serve: %w", err)
+		}
+		return nil
+	case <-sigCh:
+	}
+
+	if srv.activeUploads.Load() > 0 {
+		fmt.Fprintln(stderr, "\nUpload in progress - press Ctrl+C again to force quit")
+		select {
+		case err := <-serveErrCh:
+			if err != nil {
+				return fmt.Errorf("serve: %w", err)
+			}
+			return nil
+		case <-sigCh:
+		}
 	}
 
 	if tunnelCmd != nil {
-		_ = tunnelCmd.Process.Kill()
+		cancelTunnel()
+		stopTunnelProcess(tunnelCmd, nil)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
-	_ = httpServer.Shutdown(ctx)
+	if err := httpServer.Shutdown(ctx); err != nil {
+		return fmt.Errorf("shutdown server: %w", err)
+	}
+
+	if err, ok := <-serveErrCh; ok && err != nil {
+		return fmt.Errorf("serve: %w", err)
+	}
+	return nil
 }
 
-func isColorTerminal() bool {
+func isColorTerminal(w io.Writer) bool {
 	if os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
 		return false
 	}
-	fi, err := os.Stdout.Stat()
+	file, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	fi, err := file.Stat()
 	if err != nil {
 		return false
 	}
 	return fi.Mode()&os.ModeCharDevice != 0
 }
 
-func printReadyBanner(baseURL, token, dir string) {
+func printReadyBanner(w io.Writer, baseURL, token, dir string) {
 	reset, bold, dim, cyan, green, yellow := "", "", "", "", "", ""
-	if isColorTerminal() {
-		reset  = "\033[0m"
-		bold   = "\033[1m"
-		dim    = "\033[2m"
-		cyan   = "\033[36m"
-		green  = "\033[32m"
+	if isColorTerminal(w) {
+		reset = "\033[0m"
+		bold = "\033[1m"
+		dim = "\033[2m"
+		cyan = "\033[36m"
+		green = "\033[32m"
 		yellow = "\033[33m"
 	}
 
 	sep := "  " + cyan + strings.Repeat("─", 62) + reset
-	curlCmd := fmt.Sprintf(`curl -T <file> "%s/upload/<file>?token=%s"`, baseURL, token)
+	curlCmd := fmt.Sprintf(`curl -T <file> -H "Authorization: Bearer %s" "%s/upload/<file>"`, token, baseURL)
 
-	fmt.Println()
-	fmt.Printf("  %sslurp%s  ·  ready\n", bold+green, reset)
-	fmt.Println(sep)
-	fmt.Println()
-	fmt.Printf("  %sdir%s    %s\n", dim, reset, dir)
-	fmt.Printf("  %stoken%s  %s%s%s\n", dim, reset, bold, token, reset)
-	fmt.Println()
-	fmt.Println(sep)
-	fmt.Println()
-	fmt.Printf("  %s%s%s\n", bold+yellow, curlCmd, reset)
-	fmt.Println()
-	fmt.Println(sep)
-	fmt.Printf("  %s^C to quit%s\n", dim, reset)
-	fmt.Println()
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "  %sslurp%s  ·  ready\n", bold+green, reset)
+	fmt.Fprintln(w, sep)
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "  %sdir%s    %s\n", dim, reset, dir)
+	fmt.Fprintf(w, "  %stoken%s  %s%s%s\n", dim, reset, bold, token, reset)
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, sep)
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "  %s%s%s\n", bold+yellow, curlCmd, reset)
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, sep)
+	fmt.Fprintf(w, "  %s^C to quit%s\n", dim, reset)
+	fmt.Fprintln(w)
 }

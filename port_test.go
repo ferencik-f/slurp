@@ -1,23 +1,44 @@
 package main
 
 import (
-	"fmt"
-	"net"
 	"testing"
 )
 
-func TestFindFreePort(t *testing.T) {
-	port, err := findFreePort(8765)
+func TestListenOnPort_BindsRequestedPort(t *testing.T) {
+	ln, port, err := listenOnPort(0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if port < 8765 {
-		t.Fatalf("expected port >= 8765, got %d", port)
+	t.Cleanup(func() {
+		_ = ln.Close()
+	})
+
+	if port < defaultPortStart {
+		t.Fatalf("expected port >= %d, got %d", defaultPortStart, port)
 	}
-	// Verify the returned port is actually bindable
-	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+
+	addr := listenerPort(ln)
+	if addr != port {
+		t.Fatalf("expected reported port %d to match listener port %d", port, addr)
+	}
+}
+
+func TestListenOnPort_UsesExplicitPort(t *testing.T) {
+	probe, explicitPort, err := listenOnPort(0)
 	if err != nil {
-		t.Fatalf("port %d should be free: %v", port, err)
+		t.Fatalf("failed to allocate probe listener: %v", err)
 	}
-	ln.Close()
+	_ = probe.Close()
+
+	ln, port, err := listenOnPort(explicitPort)
+	if err != nil {
+		t.Fatalf("unexpected error binding explicit port: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = ln.Close()
+	})
+
+	if port != explicitPort {
+		t.Fatalf("expected explicit port %d, got %d", explicitPort, port)
+	}
 }
