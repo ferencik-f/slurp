@@ -7,9 +7,12 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"syscall"
 )
+
+func repeat(s string, n int) string { return strings.Repeat(s, n) }
 
 func main() {
 	portFlag := flag.Int("port", 0, "listen port (default: first free from 8765)")
@@ -95,15 +98,31 @@ func main() {
 
 	// Print startup banner once URL is known
 	go func() {
+		const (
+			reset  = "\033[0m"
+			bold   = "\033[1m"
+			dim    = "\033[2m"
+			cyan   = "\033[36m"
+			green  = "\033[32m"
+			yellow = "\033[33m"
+		)
+		sep := "  " + cyan + repeat("─", 62) + reset
 		baseURL := <-urlCh
+		curlCmd := fmt.Sprintf(`curl -T <file> "%s/upload/<file>?token=%s"`, baseURL, token)
 		fmt.Println()
-		fmt.Println("slurp is ready")
-		fmt.Printf("Saving to: %s\n", dir)
+		fmt.Printf("  %sslurp%s  ·  ready\n", bold+green, reset)
+		fmt.Println(sep)
 		fmt.Println()
-		fmt.Println("Push a file:")
-		fmt.Printf("  curl -T <file> \"%s/upload/<file>?token=%s\"\n", baseURL, token)
+		fmt.Printf("  %sdir%s    %s\n", dim, reset, dir)
+		fmt.Printf("  %stoken%s  %s%s%s\n", dim, reset, bold, token, reset)
 		fmt.Println()
-		fmt.Println("Ctrl+C to stop.")
+		fmt.Println(sep)
+		fmt.Println()
+		fmt.Printf("  %s%s%s\n", bold+yellow, curlCmd, reset)
+		fmt.Println()
+		fmt.Println(sep)
+		fmt.Printf("  %s^C to quit%s\n", dim, reset)
+		fmt.Println()
 	}()
 
 	// Graceful shutdown: first Ctrl+C warns if upload in progress, second force-quits
