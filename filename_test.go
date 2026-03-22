@@ -45,6 +45,18 @@ func TestResolveFilename_Fallback(t *testing.T) {
 	}
 }
 
+func TestDeconflict_Dotfile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".bashrc")
+	os.WriteFile(path, []byte("x"), 0644)
+
+	got := deconflict(path)
+	want := filepath.Join(dir, ".bashrc (1)")
+	if got != want {
+		t.Fatalf("expected %s, got %s", want, got)
+	}
+}
+
 func TestDeconflict(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "file.txt")

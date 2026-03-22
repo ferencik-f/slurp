@@ -1,18 +1,20 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
+	"time"
 )
-
-func repeat(s string, n int) string { return strings.Repeat(s, n) }
 
 func main() {
 	portFlag := flag.Int("port", 0, "listen port (default: first free from 8765)")
@@ -25,7 +27,12 @@ func main() {
 	port := *portFlag
 	if port == 0 {
 		if p := os.Getenv("PORT"); p != "" {
-			fmt.Sscanf(p, "%d", &port)
+			v, err := strconv.Atoi(p)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: invalid PORT %q: %v\n", p, err)
+				os.Exit(1)
+			}
+			port = v
 		}
 	}
 	if port == 0 {
@@ -74,8 +81,10 @@ func main() {
 	mux.HandleFunc("/upload/", uploadRoute)
 
 	server := &http.Server{
-		Addr:    fmt.Sprintf(":%d", port),
-		Handler: mux,
+		Addr:              fmt.Sprintf(":%d", port),
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	go func() {
@@ -87,14 +96,21 @@ func main() {
 
 	// Start tunnel or fall back to local URL
 	urlCh := make(chan string, 1)
+	var tunnelCmd *exec.Cmd
 	if *noTunnel {
 		urlCh <- fmt.Sprintf("http://localhost:%d", port)
 	} else {
-		if err := launchTunnel(port, urlCh); err != nil {
+		cmd, err := launchTunnel(port, urlCh)
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "cloudflared not found — local only mode\n")
 			urlCh <- fmt.Sprintf("http://localhost:%d", port)
+		} else {
+			tunnelCmd = cmd
 		}
 	}
+
+	// shutdownCh is closed when shutdown begins, allowing the banner goroutine to exit.
+	shutdownCh := make(chan struct{})
 
 	// Print startup banner once URL is known
 	go func() {
@@ -106,23 +122,26 @@ func main() {
 			green  = "\033[32m"
 			yellow = "\033[33m"
 		)
-		sep := "  " + cyan + repeat("─", 62) + reset
-		baseURL := <-urlCh
-		curlCmd := fmt.Sprintf(`curl -T <file> "%s/upload/<file>?token=%s"`, baseURL, token)
-		fmt.Println()
-		fmt.Printf("  %sslurp%s  ·  ready\n", bold+green, reset)
-		fmt.Println(sep)
-		fmt.Println()
-		fmt.Printf("  %sdir%s    %s\n", dim, reset, dir)
-		fmt.Printf("  %stoken%s  %s%s%s\n", dim, reset, bold, token, reset)
-		fmt.Println()
-		fmt.Println(sep)
-		fmt.Println()
-		fmt.Printf("  %s%s%s\n", bold+yellow, curlCmd, reset)
-		fmt.Println()
-		fmt.Println(sep)
-		fmt.Printf("  %s^C to quit%s\n", dim, reset)
-		fmt.Println()
+		sep := "  " + cyan + strings.Repeat("─", 62) + reset
+		select {
+		case baseURL := <-urlCh:
+			curlCmd := fmt.Sprintf(`curl -T <file> "%s/upload/<file>?token=%s"`, baseURL, token)
+			fmt.Println()
+			fmt.Printf("  %sslurp%s  ·  ready\n", bold+green, reset)
+			fmt.Println(sep)
+			fmt.Println()
+			fmt.Printf("  %sdir%s    %s\n", dim, reset, dir)
+			fmt.Printf("  %stoken%s  %s%s%s\n", dim, reset, bold, token, reset)
+			fmt.Println()
+			fmt.Println(sep)
+			fmt.Println()
+			fmt.Printf("  %s%s%s\n", bold+yellow, curlCmd, reset)
+			fmt.Println()
+			fmt.Println(sep)
+			fmt.Printf("  %s^C to quit%s\n", dim, reset)
+			fmt.Println()
+		case <-shutdownCh:
+		}
 	}()
 
 	// Graceful shutdown: first Ctrl+C warns if upload in progress, second force-quits
@@ -134,5 +153,14 @@ func main() {
 		fmt.Fprintln(os.Stderr, "\nUpload in progress — press Ctrl+C again to force quit")
 		<-sigCh
 	}
-	server.Close()
+
+	close(shutdownCh)
+
+	if tunnelCmd != nil {
+		tunnelCmd.Process.Kill()
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	server.Shutdown(ctx)
 }

@@ -82,6 +82,21 @@ func TestUploadHandler_SavesFile(t *testing.T) {
 	}
 }
 
+func TestUploadHandler_BodyTooLarge(t *testing.T) {
+	orig := maxUploadBytes
+	maxUploadBytes = 5
+	defer func() { maxUploadBytes = orig }()
+
+	dir := t.TempDir()
+	body := strings.NewReader("this is more than 5 bytes")
+	req := httptest.NewRequest("PUT", "/upload?token=secret&filename=big.bin", body)
+	w := httptest.NewRecorder()
+	uploadHandler(w, req, "secret", dir)
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413, got %d", w.Code)
+	}
+}
+
 func TestUploadHandler_CollisionDeconflicts(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "file.txt"), []byte("original"), 0644)

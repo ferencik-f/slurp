@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/subtle"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,14 +12,18 @@ import (
 	"sync/atomic"
 )
 
+// maxUploadBytes is the maximum accepted request body size (2 GiB by default).
+var maxUploadBytes int64 = 2 << 30
+
 var activeUploads int64
 
 func checkAuth(r *http.Request, token string) bool {
+	tb := []byte(token)
 	auth := r.Header.Get("Authorization")
 	if strings.HasPrefix(auth, "Bearer ") {
-		return strings.TrimPrefix(auth, "Bearer ") == token
+		return subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(auth, "Bearer ")), tb) == 1
 	}
-	return r.URL.Query().Get("token") == token
+	return subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("token")), tb) == 1
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
@@ -35,6 +41,8 @@ func uploadHandler(w http.ResponseWriter, r *http.Request, token, dir string) {
 	atomic.AddInt64(&activeUploads, 1)
 	defer atomic.AddInt64(&activeUploads, -1)
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
+
 	dest := resolveFilename(r, dir)
 	f, err := os.Create(dest)
 	if err != nil {
@@ -44,7 +52,12 @@ func uploadHandler(w http.ResponseWriter, r *http.Request, token, dir string) {
 	defer f.Close()
 
 	if _, err := io.Copy(f, r.Body); err != nil {
-		http.Error(w, "Failed to write file", http.StatusInternalServerError)
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(w, "Request Entity Too Large", http.StatusRequestEntityTooLarge)
+		} else {
+			http.Error(w, "Failed to write file", http.StatusInternalServerError)
+		}
 		return
 	}
 

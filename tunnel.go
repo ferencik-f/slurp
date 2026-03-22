@@ -22,21 +22,21 @@ func parseTunnelURL(r io.Reader, ch chan<- string) {
 }
 
 // launchTunnel starts cloudflared and delivers the public URL via ch.
-// Returns an error if cloudflared is not found in PATH.
-func launchTunnel(port int, ch chan<- string) error {
+// Returns the running command (for later cleanup) or an error if cloudflared is not found in PATH.
+func launchTunnel(port int, ch chan<- string) (*exec.Cmd, error) {
 	bin, err := exec.LookPath("cloudflared")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	cmd := exec.Command(bin, "tunnel", "--url", fmt.Sprintf("http://localhost:%d", port))
 	// cloudflared prints the URL to stderr
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := cmd.Start(); err != nil {
-		return err
+		return nil, err
 	}
 	go parseTunnelURL(stderr, ch)
-	return nil
+	return cmd, nil
 }
